@@ -1,14 +1,14 @@
-fastapi==0.117.1
-uvicorn[standard]==0.23.2
+fastapi
+uvicorn[standard]
 langchain
 langchain-community
-sentence-transformers==5.1.0
-weaviate-client==4.16.9
-streamlit==1.49.0
-pandas==2.3.2
-pydantic==2.8.0
-python-dotenv==1.1.0
-PyYAML==6.0
-pytest==7.4.0
-requests==2.31.0
+sentence-transformers
+weaviate-client
+streamlit
+pandas
+pydantic
+python-dotenv
+PyYAML
+pytest
+requests
 
