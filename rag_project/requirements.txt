@@ -1,7 +1,7 @@
 fastapi==0.117.1
 uvicorn[standard]==0.23.2
-langchain==0.3.27
-langchain-community==0.0.5
+langchain
+langchain-community
 sentence-transformers==5.1.0
 weaviate-client==4.16.9
 streamlit==1.49.0
