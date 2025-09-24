@@ -224,8 +224,8 @@ class RAGAgent:
                 f"Question: {query}\n\nContext:\n{context}\n\nAnswer:"
             )
 
-            # Use Gemini 1.5 Flash for speed
-            model = genai.GenerativeModel("gemini-1.5-flash")
+            # Use Gemini 2.0 Flash Lite for latest performance
+            model = genai.GenerativeModel("models/gemini-2.0-flash-lite")
             resp = model.generate_content(prompt)
             if hasattr(resp, 'text') and resp.text:
                 return resp.text.strip()

@@ -118,7 +118,7 @@ export function AnswerDisplay({ currentAnswer, onHighlightSections }: AnswerDisp
         </div>
 
         {currentAnswer.relevantSections.length > 0 && (
-          <div className="space-y-2">
+          <div className="space-y-3">
             <div className="flex items-center justify-between">
               <p className="font-medium">Relevant sections found:</p>
               <Button
@@ -129,12 +129,47 @@ export function AnswerDisplay({ currentAnswer, onHighlightSections }: AnswerDisp
                 Highlight in document
               </Button>
             </div>
-            <div className="flex flex-wrap gap-2">
-              {currentAnswer.relevantSections.map((section, index) => (
-                <Badge key={index} variant="outline">
-                  {section}
-                </Badge>
-              ))}
+            <div className="space-y-3 max-h-60 overflow-y-auto">
+              {currentAnswer.relevantSections.map((section, index) => {
+                // Handle both string and object formats
+                if (typeof section === 'string') {
+                  return (
+                    <Badge key={index} variant="outline" className="break-words">
+                      {section}
+                    </Badge>
+                  );
+                }
+
+                // Handle object format with source, score, excerpt
+                if (section && typeof section === 'object' && 'source' in section) {
+                  return (
+                    <div key={index} className="bg-gray-50 dark:bg-gray-800 p-3 rounded-lg border">
+                      <div className="flex items-center justify-between mb-2">
+                        <Badge variant="secondary" className="text-xs">
+                          {section.source || `Source ${index + 1}`}
+                        </Badge>
+                        {section.score && (
+                          <Badge variant="outline" className="text-xs">
+                            {Math.round(section.score * 100)}% match
+                          </Badge>
+                        )}
+                      </div>
+                      {section.excerpt && (
+                        <p className="text-sm text-gray-700 dark:text-gray-300 line-clamp-3 leading-relaxed">
+                          {section.excerpt}
+                        </p>
+                      )}
+                    </div>
+                  );
+                }
+
+                // Fallback for other object types
+                return (
+                  <div key={index} className="bg-gray-50 dark:bg-gray-800 p-2 rounded text-xs font-mono break-all">
+                    {JSON.stringify(section, null, 2)}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
@@ -145,7 +180,7 @@ export function AnswerDisplay({ currentAnswer, onHighlightSections }: AnswerDisp
             <div className="space-y-1">
               {currentAnswer.sources.map((source, index) => (
                 <p key={index} className="text-sm text-muted-foreground">
-                  • {source}
+                  • {typeof source === 'string' ? source : source.source || source.excerpt || `Source ${index + 1}`}
                 </p>
               ))}
             </div>

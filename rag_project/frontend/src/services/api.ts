@@ -13,7 +13,12 @@ export interface UploadResponse {
 export interface AskResponse {
   question: string;
   answer: string;
-  sources: string[];
+  sources: Array<{
+    source: string;
+    score: number;
+    chunk_id: string;
+    excerpt: string;
+  }>;
 }
 
 export const uploadFiles = async (files: File[]): Promise<ApiResponse<UploadResponse>> => {
