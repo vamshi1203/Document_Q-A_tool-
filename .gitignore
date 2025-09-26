@@ -256,6 +256,8 @@ dmypy.json
 # Custom
 /.claude/
 /.serena/
+.playwright-mcp/
+.claude/
 rag_project/uploads/
 rag_project/vector_store/
 rag_project/vector_store_docx_run/

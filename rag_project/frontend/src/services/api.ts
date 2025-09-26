@@ -1,4 +1,4 @@
-const API_URL = 'http://localhost:8000';
+const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '');
 
 export interface ApiResponse<T> {
   data?: T;
@@ -76,5 +76,22 @@ export const checkHealth = async (): Promise<ApiResponse<{ status: string; messa
     return { data: await response.json() };
   } catch (error) {
     return { error: 'Cannot connect to the API' };
+  }
+};
+
+export const resetDatabase = async (): Promise<ApiResponse<{ status: string; message: string }>> => {
+  try {
+    const response = await fetch(`${API_URL}/api/reset`, {
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      return { error: error.detail || 'Failed to reset database' };
+    }
+
+    return { data: await response.json() };
+  } catch (error) {
+    return { error: 'Network error. Please check your connection.' };
   }
 };

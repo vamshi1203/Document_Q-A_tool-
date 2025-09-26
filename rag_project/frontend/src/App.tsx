@@ -8,7 +8,8 @@ import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
 import { FileText, MessageSquare, History, Eye, Loader2 } from 'lucide-react';
 import { Toaster } from './components/ui/sonner';
-import { uploadFiles, askQuestion, checkHealth, AskResponse } from './services/api';
+import { uploadFiles, askQuestion, checkHealth, resetDatabase, AskResponse } from './services/api';
+import { ResetButton } from './components/ResetButton';
 
 interface QAItem {
   id: string;
@@ -139,6 +140,14 @@ export default function App() {
     setHighlightedSections(sections);
   };
 
+  const handleResetComplete = () => {
+    // Clear all local state after successful reset
+    setUploadedDocument(null);
+    setQAHistory([]);
+    setCurrentAnswer(null);
+    setHighlightedSections([]);
+  };
+
   return (
     <div className="min-h-screen" style={{ background: 'var(--background)' }}>
       <div className="container mx-auto p-6 space-y-6">
@@ -146,17 +155,29 @@ export default function App() {
         <Card className="border-2 shadow-lg" style={{ borderImage: 'var(--primary) 1' }}>
           <CardHeader className="relative overflow-hidden">
             <div className="absolute inset-0 opacity-10" style={{ background: 'var(--primary)' }}></div>
-            <CardTitle className="flex items-center gap-3 relative z-10 text-2xl">
-              <div className="p-2 rounded-xl shadow-md" style={{ background: 'var(--primary)' }}>
-                <FileText className="h-8 w-8 text-white" />
+            <div className="flex items-start justify-between relative z-10">
+              <div className="flex-1">
+                <CardTitle className="flex items-center gap-3 text-2xl">
+                  <div className="p-2 rounded-xl shadow-md" style={{ background: 'var(--primary)' }}>
+                    <FileText className="h-8 w-8 text-white" />
+                  </div>
+                  <span className="bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent font-bold">
+                    Document QA Analysis Platform
+                  </span>
+                </CardTitle>
+                <p className="text-muted-foreground text-lg mt-2">
+                  Upload documents and ask questions to get AI-powered analysis and insights.
+                </p>
               </div>
-              <span className="bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent font-bold">
-                Document QA Analysis Platform
-              </span>
-            </CardTitle>
-            <p className="text-muted-foreground relative z-10 text-lg">
-              Upload documents and ask questions to get AI-powered analysis and insights.
-            </p>
+              {uploadedDocument && (
+                <div className="ml-4">
+                  <ResetButton
+                    onResetComplete={handleResetComplete}
+                    disabled={isLoading}
+                  />
+                </div>
+              )}
+            </div>
           </CardHeader>
         </Card>
 

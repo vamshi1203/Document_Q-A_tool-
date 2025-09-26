@@ -28,7 +28,11 @@ app = FastAPI(
 # Configure CORS (Cross-Origin Resource Sharing)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with your frontend URL
+    allow_origins=[
+        "http://localhost:3000",  # Local development
+        "http://localhost:8000",  # Frontend dev tunnel # Backend ngrok domain
+        "*"  # Allow all for development - remove in production
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -45,8 +49,10 @@ rag_agent = RAGAgent(
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# Mount static files directory for serving frontend
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Mount static files directory for serving frontend (only if directory exists and has files)
+static_dir = Path("static")
+if static_dir.exists() and any(static_dir.iterdir()):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 async def root():
@@ -57,7 +63,8 @@ async def root():
         "endpoints": [
             {"path": "/api/upload", "method": "POST", "description": "Upload and process documents"},
             {"path": "/api/ask", "method": "POST", "description": "Ask questions about documents"},
-            {"path": "/api/health", "method": "GET", "description": "Check API health status"}
+            {"path": "/api/health", "method": "GET", "description": "Check API health status"},
+            {"path": "/api/reset", "method": "DELETE", "description": "Reset database and clear all documents"}
         ]
     }
 
@@ -128,9 +135,43 @@ async def ask_question(question: str = Form(...)):
 async def health_check():
     """Health check endpoint to verify the API is running."""
     return {
-        "status": "ok", 
+        "status": "ok",
         "message": "Document Q&A API is running"
     }
+
+@app.delete("/api/reset")
+async def reset_database():
+    """
+    Reset the vector database and clear all documents.
+    This will remove all uploaded documents and their embeddings.
+
+    Returns:
+        dict: Status message confirming the reset
+    """
+    try:
+        # Clear uploaded files
+        import shutil
+        if UPLOAD_DIR.exists():
+            shutil.rmtree(UPLOAD_DIR)
+            UPLOAD_DIR.mkdir(exist_ok=True)
+
+        # Reinitialize the RAG agent to clear the vector store
+        global rag_agent
+        rag_agent = RAGAgent(
+            embedding_provider='sentence_transformers',
+            embedding_model='all-MiniLM-L6-v2',
+            vector_store_type='chroma',
+        )
+
+        return {
+            "status": "success",
+            "message": "Database and uploads reset successfully"
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Reset failed: {str(e)}"
+        )
 
 # Create __init__.py if it doesn't exist
 if not (Path(__file__).parent / "__init__.py").exists():
