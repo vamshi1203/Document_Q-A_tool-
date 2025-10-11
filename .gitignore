@@ -270,3 +270,8 @@ vector_store/
 *.pkl
 rag_project/.env
 .vite/
+
+
+
+.env
+.env.backup
