@@ -104,13 +104,13 @@ export default function App() {
     try {
       const answer = await askQuestionToBackend(question);
 
-      // Update current answer
+      // Update current answer - extract source strings from the sources array of objects
       const currentAnswer = {
         question: answer.question,
         answer: answer.answer,
         confidence: 0.95, // You might want to get this from the backend
-        relevantSections: answer.sources,
-        sources: answer.sources
+        relevantSections: answer.sources.map(s => s.source),
+        sources: answer.sources.map(s => s.source)
       };
 
       setCurrentAnswer(currentAnswer);

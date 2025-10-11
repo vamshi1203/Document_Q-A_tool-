@@ -31,6 +31,90 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+class CrossEncoderReranker:
+    """High-performance reranker using cross-encoder/ms-marco-MiniLM-L-6-v2."""
+
+    def __init__(self):
+        self.model = None
+        self.tokenizer = None
+        self.device = None
+        self._initialize_model()
+
+    def _initialize_model(self):
+        """Initialize the cross-encoder model."""
+        try:
+            from transformers import AutoTokenizer, AutoModelForSequenceClassification
+            import torch
+
+            model_name = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+            logger.info(f"Loading reranking model: {model_name}")
+
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            self.model.to(self.device)
+            self.model.eval()
+
+            logger.info("Reranking model loaded successfully")
+
+        except Exception as e:
+            logger.error(f"Failed to load reranking model: {e}")
+            raise RuntimeError(f"Could not initialize reranking model: {e}")
+
+    def rerank(self, query: str, candidates: List[Dict[str, Any]], top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Rerank candidates using cross-encoder scoring.
+
+        Args:
+            query: The user query
+            candidates: List of candidate chunks with 'content' and other metadata
+            top_k: Number of top results to return
+
+        Returns:
+            Reranked candidates with relevance scores
+        """
+        if not candidates:
+            return []
+
+        if self.model is None:
+            logger.warning("Reranking model not available, returning original order")
+            return candidates[:top_k]
+
+        try:
+            # Prepare query-candidate pairs
+            pairs = [(query, candidate['content']) for candidate in candidates]
+
+            # Tokenize pairs
+            encoded = self.tokenizer(
+                pairs,
+                padding=True,
+                truncation=True,
+                return_tensors='pt',
+                max_length=512
+            ).to(self.device)
+
+            # Get relevance scores
+            with torch.no_grad():
+                outputs = self.model(**encoded)
+                scores = outputs.logits.squeeze(-1).cpu().numpy()
+
+            # Add scores to candidates
+            for i, candidate in enumerate(candidates):
+                candidate['rerank_score'] = float(scores[i])
+                candidate['original_score'] = candidate.get('score', 0.0)
+
+            # Sort by reranking scores (higher is better for cross-encoders)
+            reranked = sorted(candidates, key=lambda x: x['rerank_score'], reverse=True)
+
+            logger.info(f"Reranked {len(candidates)} candidates, returning top {min(top_k, len(reranked))}")
+            return reranked[:top_k]
+
+        except Exception as e:
+            logger.error(f"Reranking failed: {e}")
+            # Fallback to original ranking
+            return candidates[:top_k]
+
+
 class RAGAgent:
     """
     Retrieval-Augmented Generation agent.
@@ -45,8 +129,8 @@ class RAGAgent:
 
     def __init__(
         self,
-        embedding_provider: str = 'sentence_transformers',
-        embedding_model: str = 'all-MiniLM-L6-v2',
+        embedding_provider: str = 'jina',
+        embedding_model: str = 'jinaai/jina-embeddings-v4',
         vector_store_type: str = 'chroma',
         persist_directory: str = './vector_store',
         max_workers: int = 4,
@@ -59,6 +143,13 @@ class RAGAgent:
             persist_directory=persist_directory,
         )
         self.max_workers = max_workers
+
+        # Initialize reranker for two-stage retrieval
+        try:
+            self.reranker = CrossEncoderReranker()
+        except Exception as e:
+            logger.warning(f"Could not initialize reranker: {e}")
+            self.reranker = None
 
         # For optional LLM answering
         self.use_openai = (embedding_provider == 'openai') and bool(os.getenv('OPENAI_API_KEY'))
@@ -77,73 +168,68 @@ class RAGAgent:
             except Exception as e:
                 logger.warning(f"Gemini not available for answer synthesis: {e}")
                 self.use_gemini = False
-
         logger.info(
             f"RAGAgent initialized with provider={embedding_provider}, model={embedding_model}, store={vector_store_type}"
         )
 
     # --------------------------- Ingestion --------------------------- #
-    def ingest(self, sources: Union[str, List[str]], metadata: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """Ingest one or more sources (file path, URL, or directory)."""
-        if isinstance(sources, str):
-            sources = [sources]
-
-        results: List[Dict[str, Any]] = []
-        file_like: List[str] = []
-        dirs: List[str] = []
-        urls: List[str] = []
-
-        for src in sources:
-            if src.startswith('http://') or src.startswith('https://'):
-                urls.append(src)
-            elif os.path.isdir(src):
-                dirs.append(src)
-            else:
-                file_like.append(src)
-
-        # Ingest files/URLs directly
-        if file_like or urls:
-            results.extend(
-                self.pipeline.process_multiple_documents(file_like + urls, metadata_list=None, show_progress=True)
-            )
-
-        # Ingest directories
-        for d in dirs:
-            results.extend(self.pipeline.process_directory(d, recursive=True, show_progress=True))
-
-        # Persist DB after ingestion
-        self.pipeline.vector_db.persist()
-        return results
+    def ingest(self, sources: List[str], session_id: str = None) -> None:
+        """Ingest documents into the vector database with session isolation."""
+        # Process the uploaded files with session context
+        for source in sources:
+            self.pipeline.process_single_document(source, session_id=session_id)
 
     # --------------------------- QA --------------------------- #
-    def ask(self, query: str, top_k: int = 5) -> Dict[str, Any]:
-        """Answer a question using retrieved chunks. Returns dict with 'answer' and 'sources'."""
-        retrieved = self.pipeline.search_documents(query, k=top_k)
-        if not retrieved:
+    def ask(self, query: str, top_k: int = 5, session_id: str = None) -> Dict[str, Any]:
+        """Answer a question using two-stage retrieval with reranking. Returns dict with 'answer' and 'sources'."""
+        # Stage 1: Initial retrieval (broad search)
+        initial_candidates = self.pipeline.search_documents(query, k=25, session_id=session_id)  # Get 25 candidates
+        if not initial_candidates:
             return {'answer': "No relevant information found.", 'sources': []}
 
-        # Prefer OpenAI if user explicitly chose openai provider; otherwise use Gemini if available
-        if self.use_openai:
-            answer = self._synthesize_with_openai(query, retrieved)
-        elif self.use_gemini:
-            answer = self._synthesize_with_gemini(query, retrieved)
+        # Convert to dict format for reranking
+        candidates = [
+            {
+                'content': chunk.content,
+                'source': chunk.metadata.get('source', ''),
+                'score': score,
+                'chunk_id': chunk.chunk_id
+            }
+            for chunk, score in initial_candidates
+        ]
+
+        # Stage 2: Reranking for precision
+        if self.reranker and len(candidates) > 1:
+            try:
+                reranked_candidates = self.reranker.rerank(query, candidates, top_k=top_k)
+            except Exception as e:
+                logger.warning(f"Reranking failed, using original order: {e}")
+                reranked_candidates = candidates[:top_k]
         else:
-            answer = self._extractive_answer(query, retrieved)
+            reranked_candidates = candidates[:top_k]
+
+        # Stage 3: Generate final answer
+        if self.use_openai:
+            answer = self._synthesize_with_openai(query, reranked_candidates)
+        elif self.use_gemini:
+            answer = self._synthesize_with_gemini_flash(query, reranked_candidates)
+        else:
+            answer = self._extractive_answer(query, reranked_candidates)
 
         sources = [
             {
                 'source': r['source'],
-                'score': r['score'],
+                'score': r.get('rerank_score', r.get('score', 0.0)),
                 'chunk_id': r['chunk_id'],
                 'excerpt': (r['content'][:300] + '...') if len(r['content']) > 300 else r['content'],
             }
-            for r in retrieved
+            for r in reranked_candidates
         ]
         return {'answer': answer, 'sources': sources}
 
-    def ask_with_sources(self, query: str, top_k: int = 5) -> Dict[str, Any]:
+    def ask_with_sources(self, query: str, top_k: int = 5, session_id: str = None) -> Dict[str, Any]:
         """Alias for ask(); kept for API clarity."""
-        return self.ask(query, top_k=top_k)
+        return self.ask(query, top_k=top_k, session_id=session_id)
 
     # --------------------------- Maintenance --------------------------- #
     def clear_source(self, source: str) -> bool:
@@ -203,8 +289,8 @@ class RAGAgent:
             logger.warning(f"OpenAI synthesis failed, falling back to extractive: {e}")
             return self._extractive_answer(query, retrieved)
 
-    def _synthesize_with_gemini(self, query: str, retrieved: List[Dict[str, Any]]) -> str:
-        """Use Google Gemini to synthesize an answer from retrieved context (if available)."""
+    def _synthesize_with_gemini_flash(self, query: str, retrieved: List[Dict[str, Any]]) -> str:
+        """Use Google Gemini Flash with advanced prompt template for high-quality answers."""
         try:
             import google.generativeai as genai
             api_key = os.getenv('GOOGLE_API_KEY')
@@ -212,27 +298,48 @@ class RAGAgent:
                 raise RuntimeError("GOOGLE_API_KEY not set")
             genai.configure(api_key=api_key)
 
-            # Build context
+            # Build context from reranked candidates
             context_blocks = []
             for r in retrieved[:5]:
                 context_blocks.append(f"Source: {r['source']}\nContent: {r['content'][:1500]}")
-            context = "\n\n".join(context_blocks)
+            reranked_context_string = "\n\n".join(context_blocks)
 
-            prompt = (
-                "You are a helpful assistant that answers questions strictly using the provided context.\n"
-                "If the answer is not present, say you don't know.\n\n"
-                f"Question: {query}\n\nContext:\n{context}\n\nAnswer:"
+            # Advanced prompt template for Gemini Flash
+            prompt = f"""**ROLE:** You are a highly intelligent and precise Document Analysis expert.
+
+**OBJECTIVE:** Your mission is to provide a clear, confident, and synthesized answer to the user's question. You must derive your answer **exclusively** from the `DOCUMENT CONTEXT`  provided. Do not use any external knowledge.
+
+**USER'S QUESTION:**
+{query}
+
+**DOCUMENT CONTEXT:**
+---
+{reranked_context_string}
+---
+
+**CRITICAL INSTRUCTIONS:**
+1.  **Synthesize, Do Not Extract:** Do not just copy text from the context. Read, understand, and then generate a fresh, well-written paragraph that answers the question.
+2.  **Strict Grounding:** If the answer is not present in the `DOCUMENT CONTEXT` , you MUST state that the information could not be found in the provided documents. Do not guess or hallucinate.
+3.  **Handle Ambiguity:** The user's question may be conversational (e.g., "Tell me about..."). You must identify the core intent of the question and answer it based on the context.
+4.  **Tone:** Your response must be helpful, professional, and convincing. Frame your answer naturally, for example: "Based on the provided report, the key findings indicate that..."
+
+**YOUR EXPERT ANSWER:**"""
+
+            # Use Gemini 2.0 Flash for latest performance
+            model = genai.GenerativeModel("models/gemini-2.0-flash")
+            resp = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.1,  # Low temperature for consistency
+                    max_output_tokens=500,
+                )
             )
-
-            # Use Gemini 2.0 Flash Lite for latest performance
-            model = genai.GenerativeModel("models/gemini-2.0-flash-lite")
-            resp = model.generate_content(prompt)
             if hasattr(resp, 'text') and resp.text:
                 return resp.text.strip()
             # Fallback if text not present
             return self._extractive_answer(query, retrieved)
         except Exception as e:
-            logger.warning(f"Gemini synthesis failed, falling back to extractive: {e}")
+            logger.warning(f"Gemini Flash synthesis failed, falling back to extractive: {e}")
             return self._extractive_answer(query, retrieved)
 
 
@@ -259,14 +366,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--provider",
         type=str,
-        default="sentence_transformers",
-        choices=["sentence_transformers", "openai"],
+        default="jina",
+        choices=["jina", "sentence_transformers", "openai"],
         help="Embedding provider to use.",
     )
     parser.add_argument(
         "--model",
         type=str,
-        default="all-MiniLM-L6-v2",
+        default="jinaai/jina-embeddings-v4",
         help="Embedding model name.",
     )
     parser.add_argument(
@@ -476,3 +583,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

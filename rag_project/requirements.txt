@@ -1,6 +1,7 @@
 # Core dependencies
-numpy>=1.21.0
-pandas>=1.3.0
+numpy>=1.21.0,<2.0.0
+pandas>=1.3.0,<2.0.0
+scikit-learn>=1.0.0,<1.4.0
 
 # Document processing
 PyPDF2>=3.0.0
@@ -19,12 +20,14 @@ nltk>=3.8
 tiktoken>=0.4.0
 chardet>=5.0.0
 
-# Embeddings and ML
-sentence-transformers>=2.2.0
+# Cross-encoder for reranking (high-performance RAG)
+sentence-transformers>=2.2.0  # Includes cross-encoder models
 torch>=1.12.0
-transformers>=4.21.0
+transformers>=4.21.0,<4.36.0  # Pin to avoid TensorFlow dependency issues
 openai>=0.27.0
 google-generativeai>=0.7.2
+accelerate>=0.20.0
+# Note: TensorFlow is excluded to prevent DLL compatibility issues with NumPy 2.x
 
 # Vector databases
 chromadb>=0.4.0
@@ -45,4 +48,9 @@ Pillow>=10.0.0
 pytesseract>=0.3.10
 easyocr>=1.7.2
 opencv-python-headless>=4.10.0
-fastapi
+
+# API dependencies (removed after Node migration)
+# fastapi>=0.68.0
+# uvicorn>=0.15.0
+# python-multipart>=0.0.5
+# pydantic>=1.8.0

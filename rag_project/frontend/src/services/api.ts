@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '');
+=======
+const API_URL = 'http://localhost:3000';
+>>>>>>> 82eaecb (updated the backend to the node.js and express)
 
 export interface ApiResponse<T> {
   data?: T;

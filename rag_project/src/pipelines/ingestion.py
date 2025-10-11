@@ -60,20 +60,21 @@ class IngestionPipeline:
             'documents_processed': 0,
             'chunks_created': 0,
             'total_processing_time': 0,
-            'errors': []
         }
         
         logger.info(f"Initialized ingestion pipeline with {self.vector_config.vector_store_type} vector store")
         logger.info(f"Using {self.vector_config.embedding_provider} embeddings with model {self.vector_config.embedding_model}")
     
     def process_single_document(self, source: str, 
-                              metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                              metadata: Optional[Dict[str, Any]] = None,
+                              session_id: str = None) -> Dict[str, Any]:
         """
         Process a single document through the complete pipeline.
         
         Args:
             source: File path or URL to process
             metadata: Additional metadata to attach to chunks
+            session_id: Session ID for document isolation
             
         Returns:
             Dictionary with processing results and statistics
@@ -158,12 +159,12 @@ class IngestionPipeline:
                     block_chunks = self.chunker.chunk(block_text, block_meta)
                     buffer.extend(block_chunks)
                     if len(buffer) >= batch_size_chunks:
-                        self.vector_db.add_chunks(buffer)
+                        self.vector_db.add_chunks(buffer, session_id)
                         total_chunks += len(buffer)
                         logger.info(f"Indexed {total_chunks} chunks so far...")
                         buffer = []
                 if buffer:
-                    self.vector_db.add_chunks(buffer)
+                    self.vector_db.add_chunks(buffer, session_id)
                     total_chunks += len(buffer)
                 chunks = []  # not storing all chunks in memory
                 logger.info(f"Created and indexed {total_chunks} chunks (streaming)")
@@ -176,7 +177,7 @@ class IngestionPipeline:
                 
                 # Step 3: Add to vector database
                 logger.info("Step 3: Adding chunks to vector database...")
-                self.vector_db.add_chunks(chunks)
+                self.vector_db.add_chunks(chunks, session_id)
             
             # Update statistics
             processing_time = time.time() - start_time
@@ -203,7 +204,8 @@ class IngestionPipeline:
     
     def process_multiple_documents(self, sources: List[str], 
                                  metadata_list: Optional[List[Dict[str, Any]]] = None,
-                                 show_progress: bool = True) -> List[Dict[str, Any]]:
+                                 show_progress: bool = True,
+                                 session_id: str = None) -> List[Dict[str, Any]]:
         """
         Process multiple documents in parallel.
         
@@ -211,6 +213,7 @@ class IngestionPipeline:
             sources: List of file paths or URLs to process
             metadata_list: List of metadata dictionaries (one per source)
             show_progress: Whether to show progress updates
+            session_id: Session ID for document isolation
             
         Returns:
             List of processing results
@@ -231,7 +234,7 @@ class IngestionPipeline:
             future_to_source = {}
             for i, source in enumerate(sources):
                 metadata = metadata_list[i] if metadata_list else None
-                future = executor.submit(self.process_single_document, source, metadata)
+                future = executor.submit(self.process_single_document, source, metadata, session_id)
                 future_to_source[future] = source
             
             # Collect results as they complete
@@ -415,18 +418,19 @@ class IngestionPipeline:
             }
         }
     
-    def search_documents(self, query: str, k: int = 10) -> List[Dict[str, Any]]:
+    def search_documents(self, query: str, k: int = 10, session_id: str = None) -> List[Dict[str, Any]]:
         """
         Search for relevant document chunks.
         
         Args:
             query: Search query
             k: Number of results to return
+            session_id: Session ID for document isolation
             
         Returns:
             List of search results with chunks and scores
         """
-        results = self.vector_db.search(query, k)
+        results = self.vector_db.search(query, k, session_id)
         
         search_results = []
         for chunk, score in results:
@@ -440,10 +444,10 @@ class IngestionPipeline:
         
         return search_results
     
-    def delete_document(self, source: str) -> bool:
+    def delete_document(self, source: str, session_id: str = None) -> bool:
         """
         Delete all chunks from a specific document.
-        
+{{ ... }}
         Args:
             source: Source identifier to delete
             
