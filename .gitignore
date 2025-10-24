@@ -272,6 +272,12 @@ rag_project/.env
 .vite/
 
 
-
+#.env for the node backend
 .env
+.env.*
 .env.backup
+.env.local
+.env.production
+.env.developement
+
+
