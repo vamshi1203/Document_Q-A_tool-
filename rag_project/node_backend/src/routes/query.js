@@ -3,6 +3,45 @@ const router = express.Router();
 const { embedTexts } = require('../services/embedding');
 const { generateAnswer } = require('../services/llm');
 const { MongoClient } = require('mongodb');
+const crypto = require('crypto');
+const { cosineSimilarity } = require('../services/vectorDB');
+
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_MAX_SIZE = 100;
+const retrievalCache = new Map();
+
+function buildCacheKey(documentId, vector) {
+  return `${documentId}:${crypto.createHash('sha256').update(JSON.stringify(vector)).digest('hex')}`;
+}
+
+function getCachedResult(key) {
+  const entry = retrievalCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
+    retrievalCache.delete(key);
+    return null;
+  }
+  retrievalCache.delete(key);
+  retrievalCache.set(key, entry);
+  return entry.value;
+}
+
+function setCachedResult(key, value) {
+  if (retrievalCache.size >= CACHE_MAX_SIZE) {
+    const oldestKey = retrievalCache.keys().next().value;
+    retrievalCache.delete(oldestKey);
+  }
+  retrievalCache.set(key, { timestamp: Date.now(), value });
+}
+
+function rerankResults(rawResults, queryVector) {
+  return rawResults.map((chunk) => {
+    const semanticScore = chunk.embedding ? cosineSimilarity(queryVector, chunk.embedding) : 0;
+    const blended = (chunk.score || 0) * 0.6 + semanticScore * 0.4;
+    const { embedding, ...rest } = chunk;
+    return { ...rest, rawScore: chunk.score || 0, semanticScore, score: blended };
+  }).sort((a, b) => b.score - a.score);
+}
 
 const MONGODB_URI = process.env.MONGODB_ATLAS_URI;
 const DATABASE_NAME = 'document_ai';
@@ -105,50 +144,63 @@ router.post('/query', async (req, res) => {
     const db = client.db(DATABASE_NAME);
     const collection = db.collection(COLLECTION_NAME);
     
-    // Step 3: Enhanced vector search with better scoring
-    const pipeline = [
-      {
-        $vectorSearch: {
-          index: VECTOR_INDEX_NAME,
-          path: 'embedding',
-          queryVector: queryVector,
-          numCandidates: 150,
-          limit: 20,
-          filter: { documentId: documentId }
+    const cacheKey = buildCacheKey(documentId, queryVector);
+    let results;
+    let retrievalTime = 0;
+    let rawResults;
+    const cached = getCachedResult(cacheKey);
+    if (cached) {
+      console.log('[Query] ✓ Cache hit');
+      results = cached.results;
+      retrievalTime = cached.retrievalTime;
+    } else {
+      // Step 3: Enhanced vector search with better scoring
+      const retrievalStart = Date.now();
+      const pipeline = [
+        {
+          $vectorSearch: {
+            index: VECTOR_INDEX_NAME,
+            path: 'embedding',
+            queryVector: queryVector,
+            numCandidates: 180,
+            limit: 24,
+            filter: { documentId: documentId }
+          }
+        },
+        {
+          $addFields: {
+            score: { $meta: 'vectorSearchScore' }
+          }
+        },
+        {
+          // ==================== CHANGE THIS: Lower threshold for better recall ====================
+          $match: {
+            score: { $gte: 0.55 }  // Changed from 0.6 to 0.55 for better coverage
+          }
+          // ========================================================================================
+        },
+        {
+          $project: {
+            text: 1,
+            chunkIndex: 1,
+            metadata: 1,
+            score: 1,
+            embedding: 1
+          }
+        },
+        {
+          $sort: { score: -1 }
+        },
+        {
+          $limit: 12  // Changed from 5 to 8 for more context
         }
-      },
-      {
-        $addFields: {
-          score: { $meta: 'vectorSearchScore' }
-        }
-      },
-      {
-        // ==================== CHANGE THIS: Lower threshold for better recall ====================
-        $match: {
-          score: { $gte: 0.55 }  // Changed from 0.6 to 0.55 for better coverage
-        }
-        // ========================================================================================
-      },
-      {
-        $project: {
-          text: 1,
-          chunkIndex: 1,
-          metadata: 1,
-          score: 1
-        }
-      },
-      {
-        $sort: { score: -1 }
-      },
-      {
-        $limit: 8  // Changed from 5 to 8 for more context
-      }
-    ];
-    
-    const results = await collection.aggregate(pipeline).toArray();
-    const retrievalTime = Date.now() - startTime;
-    
-    console.log(`[Query] ✓ Retrieved ${results.length} chunks in ${retrievalTime}ms`);
+      ];
+      rawResults = await collection.aggregate(pipeline).toArray();
+      retrievalTime = Date.now() - retrievalStart;
+      console.log(`[Query] ✓ Retrieved ${rawResults.length} chunks in ${retrievalTime}ms`);
+      results = rerankResults(rawResults, queryVector);
+      setCachedResult(cacheKey, { results, retrievalTime });
+    }
     
     // ==================== ADD THIS: Calculate confidence ====================
     const confidence = calculateConfidence(results, questionAnalysis);
@@ -174,7 +226,8 @@ router.post('/query', async (req, res) => {
             text: 1,
             chunkIndex: 1,
             metadata: 1,
-            score: { $meta: 'vectorSearchScore' }
+            score: { $meta: 'vectorSearchScore' },
+            embedding: 1
           }
         }
       ];
@@ -196,8 +249,12 @@ router.post('/query', async (req, res) => {
         });
         // =====================================================================
       }
-      
-      results.push(...relaxedResults);
+      if (!rawResults) rawResults = [];
+      rawResults = [...(rawResults || []), ...relaxedResults.map((item) => ({ ...item, embedding: item.embedding || [] }))];
+      results = rerankResults(rawResults, queryVector);
+      retrievalTime = Date.now() - startTime;
+      setCachedResult(cacheKey, { results, retrievalTime });
+      console.log(`[Query] ✓ Relaxed retrieval combined to ${results.length} chunks`);
     }
     
     // ==================== ADD THIS: SPECIAL HANDLING FOR MISMATCHED QUERIES ====================

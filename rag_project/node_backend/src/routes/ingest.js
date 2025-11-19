@@ -1,28 +1,36 @@
+/**
+ * DOCUMENT INGESTION API
+ * Parse → Chunk (Semantic) → Embed → Store (MongoDB)
+ * WITH DOCLING + SEMANTIC CHUNKING
+ */
+
 const express = require('express');
 const multer = require('multer');
-const { v4: uuidv4 } = require('uuid'); // For unique document IDs
+const { v4: uuidv4 } = require('uuid');
 
-const { parseDocument } = require('../services/parser');
-const { chunkText } = require('../utils/chunking');
+// ✅ UPDATED IMPORTS
+const { chunkText } = require('../utils/chunking');              // Your semantic chunking
 const { embedTexts } = require('../services/embedding');
-const vectorStore = require('../services/vectorDB'); // NEW: MongoDB Vector Store
+const { DocumentVectorStore } = require('../services/vectorDB');
 
 const router = express.Router();
 
-// Supported file types by extension
+// Supported file types
 const SUPPORTED_EXTS = new Set([
   '.pdf', '.docx', '.txt', '.md',
   '.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp', '.tif', '.tiff',
 ]);
 
-// Multer memory storage: keeps files in memory as Buffer for parsing
+// Multer configuration
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB per file
+  limits: { fileSize: 500 * 1024 * 1024 },  // 500MB
 });
 
-// POST /api/ingest
-// Flow: parse → chunk → embed → store in MongoDB
+// ============================================================================
+// POST /api/ingest - Upload and process documents
+// ============================================================================
+
 router.post('/ingest', upload.array('files'), async (req, res) => {
   try {
     const files = req.files || [];
@@ -32,19 +40,26 @@ router.post('/ingest', upload.array('files'), async (req, res) => {
       });
     }
 
-    // Get userId from session/auth (if available)
     const userId = req.session?.userId || req.user?.id || 'anonymous';
 
     let totalChunks = 0;
-    const processedDocuments = []; // Track successfully processed documents
+    const processedDocuments = [];
     const perFileErrors = [];
 
+    console.log('\n╔════════════════════════════════════════════════════╗');
+    console.log('║    BATCH DOCUMENT INGESTION                       ║');
+    console.log('║    Parse → Chunk → Embed → Store                 ║');
+    console.log('╚════════════════════════════════════════════════════╝\n');
+
+    // ========== PROCESS EACH FILE ==========
     for (const f of files) {
       const filename = f.originalname || 'upload';
       
       try {
+        console.log(`\n[Processing] ${filename} (${(f.size / 1024 / 1024).toFixed(2)}MB)`);
+
         // ====================================
-        // 1. Validate file type by extension
+        // 1. VALIDATE FILE TYPE
         // ====================================
         const ext = (filename.split('.').pop() || '').toLowerCase();
         const dotExt = ext ? `.${ext}` : '';
@@ -52,15 +67,16 @@ router.post('/ingest', upload.array('files'), async (req, res) => {
         if (!SUPPORTED_EXTS.has(dotExt)) {
           perFileErrors.push({ 
             file: filename, 
-            error: 'Unsupported file type. Please upload PDF, DOCX, TXT/MD, or common image formats.' 
+            error: 'Unsupported file type. Supported: PDF, DOCX, TXT, MD, PNG, JPG, etc.' 
           });
           continue;
         }
 
         // ====================================
-        // 2. Parse document with MinerU/Tesseract
+        // 2. PARSE WITH DOCLING
         // ====================================
-        console.log(`[Ingest] Parsing file: ${filename}`);
+        console.log(`  [1/5] Parsing with Docling...`);
+        const perfMetrics = { parseStart: Date.now() };
         
         const parsed = await parseDocument(f.buffer, filename);
         const text = parsed?.markdown || parsed?.json?.text || '';
@@ -68,127 +84,163 @@ router.post('/ingest', upload.array('files'), async (req, res) => {
         if (!text || !text.trim()) {
           perFileErrors.push({ 
             file: filename, 
-            error: 'File parsing failed. No text extracted. Please try another format.' 
+            error: 'Parsing failed: No text extracted' 
           });
           continue;
         }
 
-        console.log(`[Ingest] ✓ Parsed ${filename}: ${text.length} characters`);
+        perfMetrics.parseEnd = Date.now();
+        console.log(`      ✅ Parsed: ${text.length} chars`);
 
         // ====================================
-        // 3. Chunk text into overlapping segments
+        // 3. CHUNK WITH SEMANTIC AWARENESS
         // ====================================
-        const chunks = chunkText(text, filename);
+        console.log(`  [2/5] Chunking with semantic boundaries...`);
+        perfMetrics.chunkStart = Date.now();
+
+        // ✅ USE YOUR SEMANTIC CHUNKING
+        const chunks = chunkText(text, filename, {
+          maxTokens: 500,           // 400-600 tokens sweet spot
+          overlapTokens: 100,       // 20% overlap
+          preserveMarkdown: true,   // Keep tables, code blocks
+          semanticMode: true        // Detect semantic boundaries
+        });
         
         if (!chunks.length) {
           perFileErrors.push({ 
             file: filename, 
-            error: 'No chunks produced from text. Document may be too short.' 
+            error: 'Chunking failed: No chunks produced' 
           });
           continue;
         }
 
-        console.log(`[Ingest] ✓ Chunked ${filename}: ${chunks.length} chunks`);
+        perfMetrics.chunkEnd = Date.now();
+        const totalTokens = chunks.reduce((sum, c) => sum + c.metadata.tokens, 0);
+        console.log(`      ✅ Chunks: ${chunks.length} (${totalTokens} tokens)`);
 
         // ====================================
-        // 4. Generate embeddings for all chunks (batch)
+        // 4. GENERATE EMBEDDINGS
         // ====================================
+        console.log(`  [3/5] Generating embeddings...`);
+        perfMetrics.embedStart = Date.now();
+
         const chunkTexts = chunks.map(c => c.text);
         let embeddings = [];
         
         try {
           embeddings = await embedTexts(chunkTexts);
-          console.log(`[Ingest] ✓ Generated embeddings: ${embeddings.length} vectors`);
         } catch (e) {
           console.error('[Ingest] Embedding failed:', e.message);
           perFileErrors.push({ 
             file: filename, 
-            error: 'Embedding service is unavailable. Try again later.' 
+            error: 'Embedding failed: Service unavailable' 
           });
           continue;
         }
 
-        // Validate embedding results
         if (!Array.isArray(embeddings) || embeddings.length !== chunks.length) {
           perFileErrors.push({ 
             file: filename, 
-            error: `Embedding result size mismatch: expected ${chunks.length}, got ${embeddings.length}` 
+            error: `Embedding mismatch: expected ${chunks.length}, got ${embeddings.length}` 
           });
           continue;
         }
 
+        perfMetrics.embedEnd = Date.now();
+        console.log(`      ✅ Embeddings: ${embeddings.length} vectors (384-dim)`);
+
         // ====================================
-        // 5. Generate unique document ID
+        // 5. GENERATE DOCUMENT ID
         // ====================================
-        // Format: userId_timestamp_filename
         const timestamp = Date.now();
         const sanitizedFilename = filename.replace(/[^a-z0-9._-]/gi, '_');
         const documentId = `${userId}_${timestamp}_${sanitizedFilename}`;
 
-        // ====================================
-        // 6. Prepare chunks with vectors for MongoDB
-        // ====================================
+        console.log(`  [4/5] Preparing for storage...`);
+        perfMetrics.prepStart = Date.now();
+
         const chunksWithVectors = chunks.map((c, i) => ({
           text: c.text,
           vector: embeddings[i],
+          chunkIndex: c.metadata.chunkIndex,
+          quality: c.metadata.quality
         }));
 
-        // ====================================
-        // 7. Store in MongoDB Atlas Vector Database
-        // ====================================
-        try {
-          console.log(`[Ingest] Storing document in MongoDB: ${documentId}`);
-          
-          const storeResult = await vectorStore.storeDocument(
-            documentId,
-            chunksWithVectors,
-            {
-              filename: filename,
-              userId: userId,
-              fileSize: f.size,
-              mimeType: f.mimetype,
-              uploadDate: new Date(),
-              originalChunkCount: chunks.length,
-              totalCharacters: text.length,
-            }
-          );
+        perfMetrics.prepEnd = Date.now();
 
-          console.log(`[Ingest] ✓ Stored in MongoDB:`, storeResult);
+        // ====================================
+        // 6. STORE IN MONGODB
+        // ====================================
+        console.log(`  [5/5] Storing in MongoDB...`);
+        perfMetrics.storeStart = Date.now();
 
-          totalChunks += chunks.length;
-          processedDocuments.push({
-            documentId: documentId,
+        const storeResult = await DocumentVectorStore.storeDocument(
+          documentId,
+          chunksWithVectors,
+          {
             filename: filename,
-            chunksStored: storeResult.chunksStored,
-            status: 'success',
-          });
+            userId: userId,
+            fileSize: f.size,
+            mimeType: f.mimetype,
+            uploadDate: new Date(),
+            originalChunkCount: chunks.length,
+            totalCharacters: text.length,
+            parser: 'docling',
+            chunkingType: 'semantic'
+          }
+        );
 
-        } catch (e) {
-          console.error('[Ingest] MongoDB insert failed:', e.message);
-          perFileErrors.push({ 
-            file: filename, 
-            error: 'Vector database storage failed. Please try again later.' 
-          });
-          continue;
-        }
+        perfMetrics.storeEnd = Date.now();
+        console.log(`      ✅ Stored: ${storeResult.chunksStored} chunks`);
+
+        // ====================================
+        // 7. CALCULATE METRICS & ADD TO RESPONSE
+        // ====================================
+        totalChunks += chunks.length;
+
+        const avgQuality = (chunks.reduce((sum, c) => sum + c.metadata.quality, 0) / chunks.length).toFixed(2);
+
+        processedDocuments.push({
+          documentId: documentId,
+          filename: filename,
+          chunksStored: storeResult.chunksStored,
+          status: 'success',
+          
+          // Chunk metrics
+          metrics: {
+            chunks: chunks.length,
+            totalTokens: totalTokens,
+            avgChunkSize: Math.round(totalTokens / chunks.length),
+            avgQuality: avgQuality,
+            minTokens: Math.min(...chunks.map(c => c.metadata.tokens)),
+            maxTokens: Math.max(...chunks.map(c => c.metadata.tokens)),
+            fileSize: (f.size / 1024 / 1024).toFixed(2) + ' MB'
+          },
+          
+          // Performance metrics
+          performance: {
+            parseTime: `${perfMetrics.parseEnd - perfMetrics.parseStart}ms`,
+            chunkTime: `${perfMetrics.chunkEnd - perfMetrics.chunkStart}ms`,
+            embedTime: `${perfMetrics.embedEnd - perfMetrics.embedStart}ms`,
+            storeTime: `${perfMetrics.storeEnd - perfMetrics.storeStart}ms`,
+            totalTime: `${perfMetrics.storeEnd - perfMetrics.parseStart}ms`
+          }
+        });
+
+        console.log(`  ✅ COMPLETE: ${filename}\n`);
 
       } catch (err) {
-        console.error(`[Ingest] Error processing ${filename}:`, err);
+        console.error(`\n❌ ERROR: ${filename}`);
+        console.error(err);
         perFileErrors.push({ 
           file: filename, 
-          error: err?.message || 'Unknown error during processing' 
+          error: err?.message || 'Unknown error' 
         });
       }
     }
 
-    // Close MongoDB connection after batch processing
-    
+    // ========== GENERATE RESPONSE ==========
 
-    // ====================================
-    // Response: Success or Partial Success
-    // ====================================
-    
-    // If all files failed
     if (totalChunks === 0) {
       return res.status(500).json({
         status: 'error',
@@ -199,26 +251,60 @@ router.post('/ingest', upload.array('files'), async (req, res) => {
       });
     }
 
-    // Partial or full success
-    return res.json({
+    // Success or partial success
+    const avgQualityAll = processedDocuments.length > 0 
+      ? (processedDocuments.reduce((sum, d) => sum + parseFloat(d.metrics.avgQuality), 0) / processedDocuments.length).toFixed(2)
+      : 0;
+
+    const totalProcessingTime = processedDocuments.reduce((sum, d) => {
+      const total = parseInt(d.performance.totalTime);
+      return sum + total;
+    }, 0);
+
+    console.log('\n╔════════════════════════════════════════════════════╗');
+    console.log('║         INGESTION SUMMARY                         ║');
+    console.log('╚════════════════════════════════════════════════════╝\n');
+
+    const finalResponse = {
       status: perFileErrors.length === 0 ? 'success' : 'partial_success',
       message: `Successfully processed ${processedDocuments.length} of ${files.length} files`,
-      filesProcessed: processedDocuments.length,
-      chunks_ingested: totalChunks,
+      
+      summary: {
+        filesProcessed: processedDocuments.length,
+        totalChunksIngested: totalChunks,
+        totalErrors: perFileErrors.length
+      },
+      
       documents: processedDocuments,
+      
+      // Aggregated metrics
+      aggregatedMetrics: {
+        totalChunks: totalChunks,
+        avgChunkQuality: avgQualityAll,
+        totalTokens: processedDocuments.reduce((sum, d) => sum + d.metrics.totalTokens, 0),
+        totalProcessingTime: `${totalProcessingTime}ms`,
+        avgProcessingTimePerFile: `${Math.round(totalProcessingTime / processedDocuments.length)}ms`,
+        
+        performanceBreakdown: {
+          avgParseTime: `${Math.round(processedDocuments.reduce((sum, d) => sum + parseInt(d.performance.parseTime), 0) / processedDocuments.length)}ms`,
+          avgChunkTime: `${Math.round(processedDocuments.reduce((sum, d) => sum + parseInt(d.performance.chunkTime), 0) / processedDocuments.length)}ms`,
+          avgEmbedTime: `${Math.round(processedDocuments.reduce((sum, d) => sum + parseInt(d.performance.embedTime), 0) / processedDocuments.length)}ms`,
+          avgStoreTime: `${Math.round(processedDocuments.reduce((sum, d) => sum + parseInt(d.performance.storeTime), 0) / processedDocuments.length)}ms`
+        }
+      },
+      
       errors: perFileErrors.length ? perFileErrors : undefined,
-    });
+    };
+
+    console.log(JSON.stringify(finalResponse, null, 2));
+    console.log('\n');
+
+    return res.json(finalResponse);
 
   } catch (err) {
-    console.error('[Ingest] Unexpected error:', err);
+    console.error('\n❌ UNEXPECTED ERROR');
+    console.error(err);
     
-    // Ensure connection is closed on error
-    try {
-      await vectorStore.close();
-    } catch (_) {
-      // Ignore cleanup errors
-    }
-
     return res.status(500).json({ 
       status: 'error',
       error: err?.message || 'Unexpected server error' 
@@ -226,14 +312,15 @@ router.post('/ingest', upload.array('files'), async (req, res) => {
   }
 });
 
-// GET /api/documents
-// List all documents uploaded by the current user
+// ============================================================================
+// GET /api/documents - List user documents
+// ============================================================================
+
 router.get('/documents', async (req, res) => {
   try {
     const userId = req.session?.userId || req.user?.id || 'anonymous';
 
-    const documents = await vectorStore.listUserDocuments(userId);
-    await vectorStore.close();
+    const documents = await DocumentVectorStore.listUserDocuments(userId);
 
     return res.json({
       status: 'success',
@@ -243,7 +330,6 @@ router.get('/documents', async (req, res) => {
 
   } catch (err) {
     console.error('[Ingest] List documents failed:', err);
-    await vectorStore.close();
     
     return res.status(500).json({ 
       status: 'error',
@@ -252,33 +338,32 @@ router.get('/documents', async (req, res) => {
   }
 });
 
-// DELETE /api/document/:documentId
-// Delete a specific document and all its chunks
+// ============================================================================
+// DELETE /api/document/:documentId - Delete document
+// ============================================================================
+
 router.delete('/document/:documentId', async (req, res) => {
   try {
     const { documentId } = req.params;
     const userId = req.session?.userId || req.user?.id || 'anonymous';
 
-    // Security: Only allow users to delete their own documents
-    const result = await vectorStore.deleteDocument(documentId, userId);
-    await vectorStore.close();
+    const result = await DocumentVectorStore.deleteDocument(documentId, userId);
 
     if (result.deleted === 0) {
       return res.status(404).json({
         status: 'error',
-        error: 'Document not found or you do not have permission to delete it',
+        error: 'Document not found or no permission',
       });
     }
 
     return res.json({
       status: 'success',
-      message: `Deleted ${result.deleted} chunks for document ${documentId}`,
+      message: `Deleted ${result.deleted} chunks`,
       chunksDeleted: result.deleted,
     });
 
   } catch (err) {
-    console.error('[Ingest] Delete document failed:', err);
-    await vectorStore.close();
+    console.error('[Ingest] Delete failed:', err);
     
     return res.status(500).json({ 
       status: 'error',
@@ -287,15 +372,16 @@ router.delete('/document/:documentId', async (req, res) => {
   }
 });
 
-// GET /api/document/:documentId/context
-// Get full text of a document (all chunks combined)
+// ============================================================================
+// GET /api/document/:documentId/context - Get document context
+// ============================================================================
+
 router.get('/document/:documentId/context', async (req, res) => {
   try {
     const { documentId } = req.params;
     const userId = req.session?.userId || req.user?.id || 'anonymous';
 
-    const context = await vectorStore.getDocumentContext(documentId, userId);
-    await vectorStore.close();
+    const context = await DocumentVectorStore.getDocumentContext(documentId, userId);
 
     return res.json({
       status: 'success',
@@ -305,11 +391,10 @@ router.get('/document/:documentId/context', async (req, res) => {
 
   } catch (err) {
     console.error('[Ingest] Get context failed:', err);
-    await vectorStore.close();
     
     return res.status(500).json({ 
       status: 'error',
-      error: 'Failed to retrieve document context' 
+      error: 'Failed to retrieve context' 
     });
   }
 });
