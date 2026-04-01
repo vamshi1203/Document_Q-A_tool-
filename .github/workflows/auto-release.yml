@@ -4,8 +4,10 @@ on:
   push:
     branches:
       - main
+
 permissions:
   contents: write
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -14,9 +16,15 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
 
+      - name: Generate Tag
+        id: tag
+        run: echo "tag=v1.${{ github.run_number }}" >> $GITHUB_OUTPUT
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Release ${{ steps.tag.outputs.tag }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
