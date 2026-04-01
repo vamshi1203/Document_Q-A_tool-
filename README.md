@@ -6,7 +6,7 @@ This document outlines the three main phases of the Document Q&A tool: Ingestion
 
 This phase happens upfront, before any user queries. It processes raw documents (e.g., PDFs, text files) into a searchable format stored in a vector database.
 
-### File Upload
+### 1.1 File Upload
 
 The process starts with uploading raw files or documents (e.g., PDFs, Word docs, web pages, or text files) to the system.
 
@@ -15,7 +15,7 @@ The process starts with uploading raw files or documents (e.g., PDFs, Word docs,
 *   **Output:** Raw text or structured data ready for further processing.
 *   **Example:** Uploading a research paper PDF; the system extracts all text paragraphs.
 
-### Chunking
+### 1.2 Chunking
 
 The extracted text is split into smaller, manageable pieces called "chunks" (e.g., sentences, paragraphs, or fixed-size segments of 200-500 words).
 
@@ -24,7 +24,7 @@ The extracted text is split into smaller, manageable pieces called "chunks" (e.g
 *   **Output:** A list of text chunks.
 *   **Example:** A 10-page document is broken into 50 chunks, each containing 300 words.
 
-### Embeddings
+### 1.3 Embeddings
 
 Each chunk is converted into a numerical vector representation (embedding) using an embedding model (e.g., OpenAI's `text-embedding-ada-002`, Hugging Face's `Sentence Transformers`).
 
@@ -33,7 +33,7 @@ Each chunk is converted into a numerical vector representation (embedding) using
 *   **Output:** A set of vectors, one per chunk.
 *   **Example:** The chunk "The quick brown fox jumps over the lazy dog" becomes a vector like `[0.12, -0.34, 0.56, ...]`.
 
-### Vector DB
+### 1.4 Vector DB
 
 The embeddings (vectors) and their corresponding chunks/metadata are stored in a vector database (e.g., `Pinecone`, `FAISS`, `Weaviate`, or `Chroma`).
 
@@ -46,7 +46,7 @@ The embeddings (vectors) and their corresponding chunks/metadata are stored in a
 
 This phase runs in real-time when a user asks a question. It retrieves relevant chunks from the vector DB.
 
-### User Query
+### 2.1User Query
 
 The user inputs a natural language question or query (e.g., "What is the capital of France?").
 
@@ -55,7 +55,7 @@ The user inputs a natural language question or query (e.g., "What is the capital
 *   **Output:** Raw query text.
 *   **Example:** Query: "Explain the engine size impact on fuel efficiency."
 
-### Embedding
+### 2.2 Embedding
 
 The user query is converted into a vector using the same embedding model as in the ingestion phase.
 
@@ -64,7 +64,7 @@ The user query is converted into a vector using the same embedding model as in t
 *   **Output:** Query vector.
 *   **Example:** Query becomes a vector like `[0.45, 0.23, -0.11, ...]`.
 
-### Retriever
+### 2.3 Retriever
 
 The query vector is used to search the vector DB for the most similar stored vectors (chunks).
 
@@ -73,7 +73,7 @@ The query vector is used to search the vector DB for the most similar stored vec
 *   **Output:** A ranked list of similar chunks (with their vectors and metadata).
 *   **Example:** The retriever finds 10 chunks mentioning "engine size" and "fuel efficiency."
 
-### Top-k Chunks
+### 2.4 Top-k Chunks
 
 From the retriever's results, select the top-k most relevant chunks (e.g., k=5-10, based on similarity scores).
 
@@ -86,7 +86,7 @@ From the retriever's results, select the top-k most relevant chunks (e.g., k=5-1
 
 This final phase uses the retrieved context to generate a response.
 
-### Context + Question
+### 3.1 Context + Question
 
 Combine the top-k chunks (context) with the original user query into a prompt.
 
@@ -95,7 +95,7 @@ Combine the top-k chunks (context) with the original user query into a prompt.
 *   **Output:** Augmented prompt.
 *   **Example:** Prompt: "Context: Larger engines consume more fuel... Question: Explain engine size impact on fuel efficiency."
 
-### LLM Generator
+### 3.2LLM Generator
 
 Feed the augmented prompt to an LLM (e.g., `GPT-4`, `Llama`, or `Grok`) for response generation.
 
@@ -112,3 +112,4 @@ The final generated response is returned to the user.
 *   **Flow:** Post-processing may include formatting, citation of sources (from metadata), or safety checks.
 *   **Output:** User-facing answer.
 *   **Example:** "Based on the data, engine size impacts fuel efficiency by increasing consumption for larger engines."
+THIS APPLICATION WILL EFFICIENTLY EXTRACT THE DATA FROM THE GIVEN DOCUMENT AND THE ANSWERS ARE RELEVANT TO THE USER QUERY.
