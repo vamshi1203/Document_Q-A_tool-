@@ -597,6 +597,6 @@ if __name__ == "__main__":
     
     # Search documents
     # search_results = pipeline.search_documents("your search query")
-    
+    print("Process is Started")
     print("Ingestion pipeline ready!")
     print("Use the pipeline methods to process your documents.")
