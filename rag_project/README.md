@@ -58,3 +58,6 @@ vector_config = VectorStoreConfig(
 - Process documents in smaller batches
 - Use fewer worker threads on limited memory systems
 - Use NVIDIA NV-Embed-v2 for better embedding quality (requires more memory)
+
+#Added the test feature for the rag system.
+added the python automation script for the document rag
